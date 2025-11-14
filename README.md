@@ -14,8 +14,6 @@ Configulation files with JSON format and installation yaml files.
 For all the environments of FL Server (Aggregator), FL Client (Agent), and Database Server, please create conda environment and activate it.
 
 ```sh
-# macOS
-conda env create -n federatedenv -f ./setups/federatedenv.yaml
 # Linux
 conda env create -n federatedenv -f ./setups/federatedenv_linux.yaml
 ```
