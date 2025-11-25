@@ -4,6 +4,9 @@ import pickle
 import pathlib
 import socket
 import asyncio
+import sys 
+import os
+import numpy as np
 
 # MAC address is used to generate IDs
 from getmac import get_mac_address as gma
@@ -136,20 +139,32 @@ def save_model_file(data_dict: Dict[str, Any],
         pickle.dump(data_dict, f)
 
 
-def load_model_file(path: str, name: str) -> (Dict[str, Any], Dict[str, float]):
+def load_model_file(model_path, lmfile):
     """
-    Read a local model file and return the unpickled models
-    :param path: str - path to the directory
-    :param name: str - model file name
-    :return: Dict[str,np.array] - models
+    Carga el modelo guardado en un archivo pickle.
+    Se añade un shim para ser compatible con pickles creados con numpy 2.x (numpy._core).
     """
-    fname = f'{path}/{name}'
-    with open(fname, 'rb') as f:
-        data_dict = pickle.load(f)
+    # SHIM de compatibilidad: mapear 'numpy._core' -> 'numpy.core'
+    if "numpy._core" not in sys.modules and hasattr(np, "core"):
+        sys.modules["numpy._core"] = np.core
 
-    performance_dict = data_dict.pop('performance')
+    file_path = os.path.join(model_path, lmfile)
 
-    # data_dict only includes models
+    with open(file_path, "rb") as f:
+        data = pickle.load(f)
+
+    # Si guardaste (data_dict, performance_dict) como tupla
+    if isinstance(data, tuple) and len(data) == 2:
+        data_dict, performance_dict = data
+    # Si lo guardaste como dict con llaves internas
+    elif isinstance(data, dict) and "data_dict" in data and "performance_dict" in data:
+        data_dict = data["data_dict"]
+        performance_dict = data["performance_dict"]
+    else:
+        # fallback: asumir que lo que hay es solo el data_dict
+        data_dict = data
+        performance_dict = {}
+
     return data_dict, performance_dict
 
 

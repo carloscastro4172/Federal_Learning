@@ -1,29 +1,14 @@
 {
   "participants": [
     {
-      "component_id": "fddbfa737c94762f476d99b7bd925fabf105cb1d93060975a7f47db207d89deb",
-      "ip": "127.0.0.1",
-      "port": 9002
-    },
-    {
-      "component_id": "89a71b9ce10488c1b9e28ce61f6ad9d4517664ad45790a439b74cf76648e2ca7",
-      "ip": "127.0.0.1",
-      "port": 9001
-    },
-    {
-      "component_id": "5d46fa30908ae4fb9de9a0a60edd392289a76aa377bcd3de5c39015c22451fac",
-      "ip": "127.0.0.1",
-      "port": 9002
-    },
-    {
-      "component_id": "ed84fc7397262874537cc73b6e9787f221d7cb99935aa919b09b0d232b9707c5",
-      "ip": "127.0.0.1",
-      "port": 9001
+      "component_id": "c88bc3f3c4f6ae874983c2ab1f288b0179241ca6e163f87b87e542e24b7ca5e6",
+      "ip": "172.23.203.65",
+      "port": 0
     }
   ],
   "aggregator": {
-    "component_id": "fddbfa737c94762f476d99b7bd925fabf105cb1d93060975a7f47db207d89deb",
-    "ip": "127.0.0.1",
-    "port": 9002
+    "component_id": "c88bc3f3c4f6ae874983c2ab1f288b0179241ca6e163f87b87e542e24b7ca5e6",
+    "ip": "172.23.203.65",
+    "port": 0
   }
 }

@@ -49,7 +49,19 @@ class Server:
 
         self.is_polling = bool(self.config['polling'])
 
+    def choose_next_aggregator(self):
+        """
+        Selecciona como próximo agregador al cliente con mayor 'score'.
+        (score debe ser asignado en StateManager.add_agent)
+        """
+        if not self.sm.agent_set:
+            logging.warning("[Server] No hay agentes conectados para elegir el siguiente agregador.")
+            return None
 
+        best = max(self.sm.agent_set, key=lambda a: a.get('score', 0))
+        logging.info(f"[Server] Próximo agregador elegido {best}")
+        return best
+    
     async def register(self, websocket: str, path):
         """
         Receiving the participation message specifying the model structures
@@ -208,8 +220,6 @@ class Server:
                 logging.info(f'Current agents: {self.sm.agent_set}')
 
                 # --- Local aggregation process --- #
-                # Local models --> An cluster model #
-                # Create a cluster model from local models
                 self.agg.aggregate_local_models()
 
                 # Push cluster model to DB
@@ -218,7 +228,24 @@ class Server:
                 if self.is_polling == False:
                     await self._send_cluster_models_to_all()
 
-                # increment the aggregation round number
+                # ------------ NUEVO: ROLE UPDATE COMO DICCIONARIO ------------ #
+                next_agg = self.choose_next_aggregator()
+
+                if next_agg is not None:
+                    ctrl_msg: Dict[str, Any] = {
+                        "msg_type": AgentMsgType.role_update,
+                        "new_aggregator": {
+                            "agent_id": next_agg["agent_id"],
+                            "ip": next_agg["agent_ip"],
+                            "reg_socket": next_agg["socket"],
+                        },
+                        "round": self.sm.round,
+                    }
+                    for agent in self.sm.agent_set:
+                        await send(ctrl_msg, agent["agent_ip"], agent["socket"])
+                        logging.info(f'--- Role update sent to {agent["agent_id"]} ---')
+
+                # Pasamos a la siguiente ronda
                 self.sm.increment_round()
 
     async def _send_cluster_models_to_all(self):

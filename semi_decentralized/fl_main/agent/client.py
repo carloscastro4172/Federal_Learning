@@ -12,8 +12,10 @@ from fl_main.lib.util.helpers import read_config, init_loop, \
      set_config_file, get_ip, compatible_data_dict_read, generate_model_id, \
      create_data_dict_from_models, create_meta_data_dict
      
-from fl_main.lib.util.states import IDPrefix, ClientState, AggMsgType, ParticipateConfirmationMSGLocation, GMDistributionMsgLocation, PollingMSGLocation
+from fl_main.lib.util.states import IDPrefix, ClientState, AggMsgType, ParticipateConfirmationMSGLocation, GMDistributionMsgLocation, PollingMSGLocation, AgentMsgType
 from fl_main.lib.util.messengers import generate_lmodel_update_message, generate_agent_participation_message, generate_polling_message
+
+
 
 class Client:
     """
@@ -21,7 +23,7 @@ class Client:
     between Agent's ML logic and an aggregator
     """
 
-    def __init__(self):
+    def __init__(self, initial_model=None):
 
         time.sleep(2)
         logging.info(f"--- Agent initialized ---")
@@ -34,19 +36,30 @@ class Client:
         # Getting IP Address of the agent itself
         self.agent_ip = get_ip()
 
+        self.initial_model = initial_model
+
+        # Flags para rotación
+        self.become_aggregator: bool = False
+        self._agg_thread_started: bool = False  # para no lanzar doble el server
+
         # Check command line argvs
         self.simulation_flag = False
         if len(sys.argv) > 1:
             # if sys.argv[1] == '1', it's in simulation mode
-            self.simulation_flag = bool(int(sys.argv[1]))
+            try:
+                self.simulation_flag = bool(int(sys.argv[1]))
+            except Exception:
+                self.simulation_flag = False
 
-        # Read config
+        # Read config -> usa setups/config_agent.json
         config_file = set_config_file("agent")
         self.config = read_config(config_file)
 
         # Comm. info to join the FL platform
+        # Estos valores se pueden sobrescribir luego desde node_main.py
         self.aggr_ip = self.config['aggr_ip']
         self.reg_socket = self.config['reg_socket']
+
         self.msend_socket = 0  # later updated based on welcome message
         self.exch_socket = 0 
 
@@ -75,16 +88,76 @@ class Client:
         # Polling Method
         self.is_polling = bool(self.config['polling'])
 
+    # -------------------- ROTACIÓN: lanzar agregador -------------------- #
+    def _start_aggregator_background(self):
+        """
+        Lanza el Server() federado en un hilo aparte
+        cuando este cliente es elegido como nuevo agregador.
+        """
+        if self._agg_thread_started:
+            return
+        self._agg_thread_started = True
+
+        from fl_main.aggregator.server_th import Server
+        from fl_main.lib.util.communication_handler import init_fl_server
+
+        def run_server():
+            logging.info("[CLIENT] Lanzando servidor federado (nuevo agregador)...")
+            s = Server()
+
+            # El nuevo agregador será este nodo, así que usamos su IP
+            s.aggr_ip = self.agent_ip
+            logging.info(f"[CLIENT] Nuevo agregador escuchará en {s.aggr_ip}:{s.reg_socket}")
+
+            init_fl_server(
+                s.register,
+                s.receive_msg_from_agent,
+                s.model_synthesis_routine(),
+                s.aggr_ip,
+                s.reg_socket,
+                s.recv_socket,
+            )
+
+        th = Thread(target=run_server, daemon=True)
+        th.start()
+
     async def participate(self):
         """
         Send the first message to join an aggregator and
         Receive state/comm. info from the aggregator
         :return:
         """
-        # Read the local models to tell the structure to the aggregator
-        # (not necessarily trained)
-        data_dict, performance_dict = load_model_file(self.model_path, self.lmfile)
+        # Intentar leer el modelo local; si no existe, usar el modelo inicial del InitServer
+        try:
+            data_dict, performance_dict = load_model_file(self.model_path, self.lmfile)
+            logging.info("--- Local model file found, using existing lms.binaryfile ---")
+        except FileNotFoundError:
+            logging.warning("--- No local model file found, using initial model from InitServer ---")
 
+            if self.initial_model is None:
+                raise RuntimeError(
+                    "No se encontró modelo local y no se recibió initial_model desde InitServer."
+                )
+
+            # self.initial_model: dict[str, np.ndarray] que viene de InitServer
+            models = self.initial_model
+
+            # Creamos un model_id nuevo
+            model_id = generate_model_id(IDPrefix.agent, self.id, time.time())
+
+            # Metadata mínima
+            meta_data_dict = create_meta_data_dict(0.0, 1)
+
+            # Creamos data_dict en el formato esperado
+            data_dict = create_data_dict_from_models(model_id, models, self.id)
+
+            # Guardamos el modelo local inicial en lms.binaryfile
+            save_model_file(data_dict, self.model_path, self.lmfile, meta_data_dict)
+            logging.info("--- Local initial model created from InitServer model and saved ---")
+
+            performance_dict = meta_data_dict
+
+        # A partir de aquí, data_dict y performance_dict existen sí o sí
         _, gene_time, models, model_id = compatible_data_dict_read(data_dict)
 
         logging.debug(models)
@@ -93,18 +166,18 @@ class Client:
                 self.agent_name, self.id, model_id, models, self.init_weights_flag, self.simulation_flag,
                 self.exch_socket, gene_time, performance_dict, self.agent_ip)
         resp = await send(msg, self.aggr_ip, self.reg_socket)
-
+        
         logging.debug(msg)
         logging.info(f"--- Init Response: {resp} ---")
-
+        if resp is None:
+            logging.error(f"--- No hubo respuesta del agregador en {self.aggr_ip}:{self.reg_socket} ---")
+            raise RuntimeError("Aggregator not reachable")
         # Parse the response message
-        # including some socket info and the actual round number
         self.round = resp[int(ParticipateConfirmationMSGLocation.round)]
         self.exch_socket = resp[int(ParticipateConfirmationMSGLocation.exch_socket)]
         self.msend_socket = resp[int(ParticipateConfirmationMSGLocation.recv_socket)]
         self.id = resp[int(ParticipateConfirmationMSGLocation.agent_id)]
 
-        # Receiving the welcome message
         logging.info(f'--- {resp[int(ParticipateConfirmationMSGLocation.msg_type)]} Message Received ---')
 
         self.save_model_from_message(resp, ParticipateConfirmationMSGLocation)
@@ -147,13 +220,32 @@ class Client:
     # Push or Polling
     async def wait_models(self, websocket, path):
         """
-        Waiting for cluster models from the aggregator
-        :param websocket:
-        :return:
+        Waiting for cluster models or control messages from the aggregator
+        (push mode)
         """
         gm_msg = await receive(websocket)
-        logging.info(f'--- Global Model Received ---')
+        logging.info(f'--- Message Received on wait_models ---')
+        logging.debug(f'Message: {gm_msg}')
 
+        # --------- NUEVO: manejar role_update como diccionario ---------
+        if isinstance(gm_msg, dict) and gm_msg.get("msg_type") == AgentMsgType.role_update:
+            new_info = gm_msg["new_aggregator"]
+
+            if new_info["agent_id"] == self.id:
+                logging.info("[CLIENT] Me tocó ser el NUEVO agregador (role_update recibido en push).")
+                self.become_aggregator = True
+                # Lanzar el servidor federado en segundo plano
+                self._start_aggregator_background()
+            else:
+                logging.info("[CLIENT] Nuevo agregador es otro nodo (role_update en push).")
+                self.aggr_ip = new_info["ip"]
+                self.reg_socket = new_info["reg_socket"]
+
+            # No es un modelo global, así que no llamamos save_model_from_message
+            return
+
+        # --------- Comportamiento original: recibir modelos globales ---------
+        logging.info(f'--- Global Model Received ---')
         logging.debug(f'Models: {gm_msg}')
 
         self.save_model_from_message(gm_msg, GMDistributionMsgLocation)
@@ -163,6 +255,23 @@ class Client:
 
         msg = generate_polling_message(self.round, self.id)
         resp = await send(msg, self.aggr_ip, self.msend_socket)
+
+        # --------- NUEVO: manejar role_update también en modo polling ---------
+        if isinstance(resp, dict) and resp.get("msg_type") == AgentMsgType.role_update:
+            new_info = resp["new_aggregator"]
+
+            if new_info["agent_id"] == self.id:
+                logging.info("[CLIENT] Me tocó ser el NUEVO agregador (role_update recibido en polling).")
+                self.become_aggregator = True
+                self._start_aggregator_background()
+            else:
+                logging.info("[CLIENT] Nuevo agregador es otro nodo (role_update en polling).")
+                self.aggr_ip = new_info["ip"]
+                self.reg_socket = new_info["reg_socket"]
+
+            return
+
+        # --------- Comportamiento original ---------
         if resp[int(PollingMSGLocation.msg_type)] == AggMsgType.update:
             logging.info(f'--- Global Model Received ---')
             self.save_model_from_message(resp, GMDistributionMsgLocation)
